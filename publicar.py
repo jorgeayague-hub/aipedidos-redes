@@ -208,6 +208,9 @@ def main():
     if "--probar" in sys.argv:
         return probar()
     simular = "--simular" in sys.argv
+    if not simular and not (TOKEN and PAGE and IG and MEDIA_BASE):
+        print("Falta configurar las claves o MEDIA_BASE: no publico nada todavía.")
+        return 0
     ahora = datetime.now(timezone.utc)
     estado = cargar_estado()
     aviso = RAIZ / "estado" / "aviso.txt"
