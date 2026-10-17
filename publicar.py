@@ -8,7 +8,7 @@ Variables de entorno:
   META_PAGE_ID      id de la página de Facebook
   META_IG_USER_ID   id de la cuenta de Instagram profesional vinculada a la página
   MEDIA_BASE        URL pública donde están los archivos (por ejemplo GitHub Pages del repo)
-  GRAPH_VERSION     versión de la API (por defecto v23.0)
+  GRAPH_VERSION     versión de la API (por defecto v26.0)
 
 Uso:
   python publicar.py            publica lo vencido
@@ -17,6 +17,7 @@ Uso:
 """
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -27,18 +28,45 @@ import requests
 RAIZ = Path(__file__).resolve().parent
 COLA = RAIZ / "cola"
 ESTADO = RAIZ / "estado" / "publicados.json"
-VERSION = os.environ.get("GRAPH_VERSION", "v23.0")
+VERSION = os.environ.get("GRAPH_VERSION") or "v26.0"
 GRAPH = f"https://graph.facebook.com/{VERSION}"
-TOKEN = os.environ.get("META_PAGE_TOKEN", "")
-PAGE = os.environ.get("META_PAGE_ID", "")
-IG = os.environ.get("META_IG_USER_ID", "")
-MEDIA_BASE = os.environ.get("MEDIA_BASE", "").rstrip("/")
+TOKEN = os.environ.get("META_PAGE_TOKEN", "").strip()
+TOKEN_ORIGINAL = TOKEN
+PAGE = os.environ.get("META_PAGE_ID", "").strip()
+IG = os.environ.get("META_IG_USER_ID", "").strip()
+MEDIA_BASE = os.environ.get("MEDIA_BASE", "").strip().rstrip("/")
 MAX_INTENTOS = 3
 TIPOS = {"posteo", "carrusel", "reel", "historia"}
 
 
 class ErrorMeta(Exception):
     pass
+
+
+def limpiar(texto):
+    """Saca cualquier clave de un mensaje antes de mostrarlo o guardarlo (el repo es público)."""
+    texto = str(texto)
+    for t in {TOKEN, TOKEN_ORIGINAL}:
+        if t:
+            texto = texto.replace(t, "***")
+    return re.sub(r"(access_token=)[^&\s\"']+", r"\1***", texto)
+
+
+def asegurar_token_de_pagina():
+    """Si la clave guardada es de usuario, la cambia por la de la página (la de página no vence)."""
+    global TOKEN
+    try:
+        yo = get("me", fields="id")
+        if yo.get("id") == PAGE:
+            return "de página"
+        datos = get(PAGE, fields="access_token")
+        if datos.get("access_token"):
+            TOKEN = datos["access_token"]
+            print(f"::add-mask::{TOKEN}")
+            return "de usuario (la cambié por la de la página)"
+    except (ErrorMeta, requests.RequestException) as e:
+        print("Aviso: no pude revisar la clave:", limpiar(e))
+    return "sin revisar"
 
 
 def llamar(metodo, url, **kw):
@@ -196,9 +224,14 @@ def probar():
     if falta:
         print("Faltan:", ", ".join(falta))
         return 1
-    pagina = get(PAGE, fields="name")
-    cuenta = get(IG, fields="username")
-    print(f"OK página «{pagina.get('name')}» e Instagram @{cuenta.get('username')}")
+    tipo = asegurar_token_de_pagina()
+    try:
+        pagina = get(PAGE, fields="name")
+        cuenta = get(IG, fields="username")
+    except (ErrorMeta, requests.RequestException) as e:
+        print("ERROR al verificar:", limpiar(e))
+        return 1
+    print(f"OK página «{pagina.get('name')}» e Instagram @{cuenta.get('username')} (clave {tipo}, API {VERSION})")
     for it in cargar_cola():
         print(f"  {it['_cuando'].isoformat()}  {it['tipo']:9}  {it['id']}")
     return 0
@@ -211,11 +244,22 @@ def main():
     if not simular and not (TOKEN and PAGE and IG and MEDIA_BASE):
         print("Falta configurar las claves o MEDIA_BASE: no publico nada todavía.")
         return 0
-    ahora = datetime.now(timezone.utc)
-    estado = cargar_estado()
     aviso = RAIZ / "estado" / "aviso.txt"
     if aviso.exists():
         aviso.unlink()
+    ahora = datetime.now(timezone.utc)
+    estado = cargar_estado()
+
+    def pendiente(it, red):
+        r = estado.get(it["id"], {}).get(red, {})
+        return not r.get("ok") and r.get("intentos", 0) < MAX_INTENTOS
+
+    hay_pendientes = any(it["_cuando"] <= ahora and pendiente(it, red) for it in cargar_cola() for red in it["redes"])
+    if not hay_pendientes:
+        print("Nada para publicar ahora.")
+        return 0
+    if not simular:
+        asegurar_token_de_pagina()
     errores, definitivos = [], []
     for item in cargar_cola():
         if item["_cuando"] > ahora:
@@ -235,7 +279,7 @@ def main():
                 r.pop("error", None)
                 print(f"OK  {red:9} {item['tipo']:9} {item['id']} -> {pid}")
             except (ErrorMeta, requests.RequestException, KeyError) as e:
-                r["error"] = str(e)[:500]
+                r["error"] = limpiar(e)[:500]
                 errores.append(f"{item['id']} ({red}): {r['error']}")
                 if r["intentos"] >= MAX_INTENTOS:
                     definitivos.append(f"- {item['id']} en {red}, programado para {item['cuando']}: {r['error']}")
