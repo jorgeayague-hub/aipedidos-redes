@@ -2,7 +2,8 @@ name: Publicar en Instagram y Facebook
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # Cada 15 minutos, lejos de :00/:15/:30/:45: GitHub atrasa o descarta corridas en esos minutos
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       modo:
